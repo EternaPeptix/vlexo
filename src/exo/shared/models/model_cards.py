@@ -167,7 +167,7 @@ class ModelCard(FrozenModel):
     quantization: str = ""
     base_model: str = ""
     capabilities: list[str] = []
-    backends: list[Backend]
+    backends: list[Backend] = Field(default_factory=lambda: list(Backend))
     reasoning_dialect: ReasoningDialect = "none"
     context_length: int = 0
     uses_cfg: bool = False
@@ -217,8 +217,9 @@ class ModelCard(FrozenModel):
     @staticmethod
     async def load_from_path(path: Path) -> "ModelCard":
         async with await open_file(path, "r") as f:
-            py = tomlkit.loads(await f.read())
-            return ModelCard.model_validate(py)
+            doc = tomlkit.loads(await f.read())
+            data = doc.unwrap() if hasattr(doc, "unwrap") else dict(doc)
+            return ModelCard.model_validate(data)
 
     # Is it okay that model card.load defaults to network access if the card doesn't exist? do we want to be more explicit here?
     @staticmethod
