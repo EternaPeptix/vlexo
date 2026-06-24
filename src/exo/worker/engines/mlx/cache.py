@@ -69,6 +69,22 @@ def _detached_copy(a: mx.array) -> mx.array:
     return mx.array(np.array(a))
 
 
+def _restore_cache_offset(cache_obj: object, target_offset: int) -> None:
+    try:
+        if hasattr(cache_obj, "offset"):
+            setattr(cache_obj, "offset", target_offset)
+            return
+    except (AttributeError, TypeError):
+        pass
+
+    children = getattr(cache_obj, "caches", None)
+    if children is None:
+        return
+
+    for child in children:
+        _restore_cache_offset(child, target_offset)
+
+
 def copy_rotating_kv_cache(cache: RotatingKVCache) -> RotatingKVCache | None:
     """
     Deepcopy copies the metadata associated with an mx array.
@@ -386,8 +402,7 @@ class KVPrefixCache:
                     continue
                 if isinstance(c, DeepseekV4Cache):
                     continue
-                if hasattr(c, "offset"):
-                    c.offset = restore_pos
+                _restore_cache_offset(c, restore_pos)
 
         self._access_counter += 1
         self._last_used[best_index] = self._access_counter

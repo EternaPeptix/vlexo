@@ -9,7 +9,7 @@ _DONE: Final = object()
 async def with_sse_keepalive(
     generator: AsyncIterator[str],
     keepalive_message: str = ": keep-alive\n\n",
-    interval: float = 10.0,
+    interval: float = 5.0,
 ) -> AsyncIterator[str]:
     yield keepalive_message
     send, recv = anyio.create_memory_object_stream[str | object]()

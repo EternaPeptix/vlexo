@@ -46,6 +46,7 @@ from exo.api.adapters.responses import (
     generate_responses_stream,
     responses_request_to_text_generation,
 )
+from exo.api.disconnect import DisconnectTolerantMiddleware
 from exo.api.keepalive import with_sse_keepalive
 from exo.api.types import (
     AddCustomModelParams,
@@ -1906,11 +1907,14 @@ class API:
         # prevents hangs when mid-request and connection refuses to close
         cfg.graceful_timeout = 2  # seconds
         cfg.shutdown_timeout = 3  # seconds
+        # Large-context prefill can run for minutes before the first token.
+        cfg.keep_alive_timeout = 600
+        cfg.read_timeout = 600
 
         with anyio.CancelScope(shield=True):
             try:
                 await serve(
-                    cast(ASGIFramework, self.app),
+                    cast(ASGIFramework, DisconnectTolerantMiddleware(self.app)),
                     cfg,
                     shutdown_trigger=ev.wait,
                 )
