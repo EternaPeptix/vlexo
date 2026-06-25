@@ -231,6 +231,7 @@ class ChatCompletionRequest(BaseModel):
     tool_choice: str | dict[str, Any] | None = None
     parallel_tool_calls: bool | None = None
     user: str | None = None
+    use_prefix_cache: bool = True
 
 
 class BenchChatCompletionRequest(ChatCompletionRequest):

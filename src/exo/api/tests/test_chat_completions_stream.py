@@ -193,3 +193,28 @@ class TestNonStreamingResponseShape:
         assert "function_call" not in message
         assert "name" not in message
         assert "tool_call_id" not in message
+
+
+class TestPrefillProgressStreamShape:
+    async def test_prefill_progress_emits_semantic_data_frame(self):
+        chunks: list[PrefillProgressChunk | ErrorChunk | ToolCallChunk | TokenChunk] = [
+            PrefillProgressChunk(
+                model=_TEST_MODEL,
+                processed_tokens=128,
+                total_tokens=4096,
+            ),
+        ]
+        lines: list[str] = []
+        async for event in generate_chat_stream(
+            CommandId("test-cmd-prefill"), _stream(chunks)
+        ):
+            lines.append(event)
+
+        events = _parse_data_events(lines)
+        assert len(events) == 1
+        assert events[0]["exo"]["status"] == "prefill"
+        assert events[0]["exo"]["processed_tokens"] == 128
+        assert events[0]["exo"]["total_tokens"] == 4096
+        delta = events[0]["choices"][0]["delta"]
+        _assert_delta_spec_compliant(delta)
+

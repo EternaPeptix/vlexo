@@ -327,7 +327,12 @@ def prefill(
     set_pipeline_prefill(model, is_prefill=True)
 
     mx_barrier(group)
+    if KV_BITS is not None:
+        logger.info(
+            f"Using int{KV_BITS} MLA latent KV cache (group_size={KV_GROUP_SIZE})"
+        )
     logger.info("Starting prefill")
+
 
     is_pipeline = _has_pipeline_communication_layer(model)
 

@@ -47,7 +47,7 @@ from exo.api.adapters.responses import (
     responses_request_to_text_generation,
 )
 from exo.api.disconnect import DisconnectTolerantMiddleware
-from exo.api.keepalive import with_sse_keepalive
+from exo.api.keepalive import SEMANTIC_SSE_KEEPALIVE, with_sse_keepalive
 from exo.api.types import (
     AddCustomModelParams,
     AdvancedImageParams,
@@ -886,6 +886,7 @@ class API:
                         command.command_id,
                         self._token_chunk_stream(command.command_id),
                     ),
+                    semantic_keepalive_message=SEMANTIC_SSE_KEEPALIVE,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -929,6 +930,7 @@ class API:
                         command.command_id,
                         self._token_chunk_stream(command.command_id),
                     ),
+                    semantic_keepalive_message=SEMANTIC_SSE_KEEPALIVE,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -1908,8 +1910,8 @@ class API:
         cfg.graceful_timeout = 2  # seconds
         cfg.shutdown_timeout = 3  # seconds
         # Large-context prefill can run for minutes before the first token.
-        cfg.keep_alive_timeout = 600
-        cfg.read_timeout = 600
+        cfg.keep_alive_timeout = 1800
+        cfg.read_timeout = 1800
 
         with anyio.CancelScope(shield=True):
             try:

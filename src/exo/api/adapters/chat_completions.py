@@ -1,6 +1,7 @@
 """OpenAI Chat Completions API adapter for converting requests/responses."""
 
 import base64
+import json
 import re
 import time
 from collections.abc import AsyncGenerator
@@ -175,6 +176,7 @@ async def chat_request_to_text_generation(
         presence_penalty=request.presence_penalty,
         frequency_penalty=request.frequency_penalty,
         images=images,
+        use_prefix_cache=request.use_prefix_cache,
     )
 
 
@@ -227,8 +229,25 @@ async def generate_chat_stream(
     async for chunk in chunk_stream:
         match chunk:
             case PrefillProgressChunk():
-                # Use SSE comment so third-party clients ignore it
-                yield f": prefill_progress {chunk.model_dump_json()}\n\n"
+                payload = {
+                    "id": command_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": str(chunk.model),
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant"},
+                            "finish_reason": None,
+                        }
+                    ],
+                    "exo": {
+                        "status": "prefill",
+                        "processed_tokens": chunk.processed_tokens,
+                        "total_tokens": chunk.total_tokens,
+                    },
+                }
+                yield f"data: {json.dumps(payload)}\n\n"
 
             case ErrorChunk():
                 error_response = ErrorResponse(
