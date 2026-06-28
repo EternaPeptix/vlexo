@@ -139,3 +139,69 @@ def test_select_keep_indices_empty_prompt():
     keep = select_keep_indices(mx.array([]), mx.array([], dtype=mx.int32), cfg)
     assert len(keep) == 0
 
+
+def test_score_importance_returns_1d_array():
+    """score_importance returns 1D importance array (not 2D — would crash mx.concatenate)."""
+    import mlx.core as mx
+    from src.exo.worker.engines.mlx.spec_prefill import score_importance, SpecPrefillConfig
+
+    cfg = SpecPrefillConfig()
+    # Create minimal q_vectors and KV cache: 1 layer, 4 lookahead tokens, 8 prompt tokens
+    n_lookahead = 4
+    seq_len = 8
+    n_heads = 2
+    head_dim = 4
+
+    # q shape: [n_lookahead, n_heads, head_dim]
+    q = mx.random.normal(shape=(n_lookahead, n_heads, head_dim))
+    q_vectors = {0: q}
+
+    # k shape: [batch=1, n_heads, seq_len, head_dim]
+    k = mx.random.normal(shape=(1, n_heads, seq_len, head_dim))
+    v = mx.random.normal(shape=(1, n_heads, seq_len, head_dim))
+    draft_kv_cache = [(k, v)]
+
+    prompt_tokens = mx.zeros(seq_len, dtype=mx.int32)
+
+    importance = score_importance(q_vectors, draft_kv_cache, prompt_tokens, cfg)
+
+    # CRITICAL: must be 1D for downstream mx.concatenate to work
+    assert importance.ndim == 1, f"importance must be 1D, got {importance.ndim}D"
+    assert importance.shape == (seq_len,), f"expected shape ({seq_len},), got {importance.shape}"
+
+
+def test_select_keep_indices_zero_keep_pct_returns_min_one_chunk():
+    """keep_pct=0 should still keep at least 1 chunk (per spec n_keep_chunks=max(1,...))."""
+    import mlx.core as mx
+    from src.exo.worker.engines.mlx.spec_prefill import select_keep_indices
+    cfg = SpecPrefillConfig(keep_pct=0, chunk_size=4)
+    importance = mx.array([0.1, 0.9, 0.2, 0.8, 0.3, 0.7, 0.4, 0.6])  # 8 tokens, 2 chunks
+    prompt = mx.zeros(8, dtype=mx.int32)
+    keep = select_keep_indices(importance, prompt, cfg)
+    # Even at keep_pct=0, we keep min 1 chunk = 4 tokens
+    assert len(keep) == 4
+
+
+def test_select_keep_indices_full_keep_pct():
+    """keep_pct=100 keeps all tokens."""
+    import mlx.core as mx
+    from src.exo.worker.engines.mlx.spec_prefill import select_keep_indices
+    cfg = SpecPrefillConfig(keep_pct=100, chunk_size=4)
+    importance = mx.array([0.1, 0.9, 0.2, 0.8, 0.3, 0.7, 0.4, 0.6])
+    prompt = mx.zeros(8, dtype=mx.int32)
+    keep = select_keep_indices(importance, prompt, cfg)
+    assert len(keep) == 8
+    assert keep.tolist() == [0, 1, 2, 3, 4, 5, 6, 7]
+
+
+def test_select_keep_indices_non_divisible_length():
+    """prompt length not divisible by chunk_size."""
+    import mlx.core as mx
+    from src.exo.worker.engines.mlx.spec_prefill import select_keep_indices
+    cfg = SpecPrefillConfig(keep_pct=50, chunk_size=4)
+    importance = mx.array([0.5] * 10)  # 10 tokens, chunk_size=4 → 3 chunks (4,4,2)
+    prompt = mx.zeros(10, dtype=mx.int32)
+    keep = select_keep_indices(importance, prompt, cfg)
+    # 50% of 3 = 1.5 → max(1, 1) = 1 chunk kept
+    assert len(keep) == 4  # one chunk of 4 tokens
+

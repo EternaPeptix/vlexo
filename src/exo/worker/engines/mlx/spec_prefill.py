@@ -277,9 +277,13 @@ def score_importance(
         # Compute attention scores: softmax(Q @ K^T / sqrt(d)) per head
         # Simplified: mean over heads and lookahead positions
         d = q.shape[-1]
-        scores = (q[:, None, :] @ k[0].transpose(0, 2, 1)) / math.sqrt(d)  # [n_lookahead, n_heads, seq]
-        # Average over lookahead and heads
-        importance_layer = mx.mean(scores, axis=(0, 1))  # [seq]
+        scores = (q[:, None, :] @ k[0].transpose(0, 2, 1)) / math.sqrt(d)
+        # scores shape: [n_lookahead, 1, n_heads, seq]. Axis 1 is a singleton
+        # broadcasting artifact from `q[:, None, :]`. Mean over the three
+        # non-sequence axes (lookahead, singleton, heads) to produce a clean
+        # 1D [seq] tensor. The earlier `mx.mean(axis=(0, 1)).squeeze()` left
+        # a 2D [n_heads, seq] because squeeze() only removes size-1 dims.
+        importance_layer = mx.mean(scores, axis=(0, 1, 2))  # [seq] (1D)
         # Trim or pad to match prompt_tokens length
         if len(importance_layer) > len(prompt_tokens):
             importance_layer = importance_layer[:len(prompt_tokens)]
