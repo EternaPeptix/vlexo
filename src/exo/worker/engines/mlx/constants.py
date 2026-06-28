@@ -20,6 +20,11 @@ SPEC_PREFILL_ENABLED: bool = os.environ.get("EXO_SPEC_PREFILL", "").lower() in (
 SPEC_PREFILL_DRAFT_MODEL: str = os.environ.get("EXO_SPEC_PREFILL_DRAFT", "mlx-community/GLM-4-9B-0414-4bit")
 SPEC_PREFILL_KEEP_PCT: int = int(os.environ.get("EXO_SPEC_PREFILL_KEEP_PCT", "20"))
 SPEC_PREFILL_MIN_PROMPT_TOKENS: int = int(os.environ.get("EXO_SPEC_PREFILL_MIN_PROMPT_TOKENS", "4096"))
+# Minimum draft<->target tokenizer vocab overlap required to enable SpecPrefill.
+# Default 0.95 — GLM-4 vs GLM-5 hits 0.977 and works because token IDs map 1:1
+# for the vast majority of tokens; non-overlapping tokens fall back to dense
+# prefill inside sparse_prefill_target (always-keep on mismatch).
+SPEC_PREFILL_MIN_OVERLAP: float = float(os.environ.get("EXO_SPEC_PREFILL_MIN_OVERLAP", "0.95"))
 
 ATTENTION_KV_BITS: int | None = 4
 MAX_TOKENS: int = 32168

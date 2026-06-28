@@ -325,11 +325,18 @@ def prefill(
     from exo.worker.engines.mlx.spec_prefill import SpecPrefillConfig
 
     specprefill_cfg = SpecPrefillConfig()
-    if (
+    specprefill_eligible = (
         specprefill_cfg.enabled
         and not is_pipeline_model
         and num_tokens >= specprefill_cfg.min_prompt_tokens
-    ):
+    )
+    logger.info(
+        f"SpecPrefill gate: enabled={specprefill_cfg.enabled} "
+        f"is_pipeline_model={is_pipeline_model} "
+        f"num_tokens={num_tokens} min_prompt_tokens={specprefill_cfg.min_prompt_tokens} "
+        f"=> eligible={specprefill_eligible} (draft={specprefill_cfg.draft_model_id})"
+    )
+    if specprefill_eligible:
         try:
             from exo.worker.engines.mlx.spec_prefill import (
                 cleanup_rope,
@@ -343,10 +350,22 @@ def prefill(
 
             draft_model = get_draft_model()
             if not draft_model.is_loaded():
-                # Load first (validate_tokenizer_compat requires is_loaded)
+                # Load first (validate_tokenizer_compat requires is_loaded).
+                # In steady state this is a no-op because warmup_inference()
+                # preloads the draft model via preload_draft_model().
+                logger.info(
+                    f"SpecPrefill draft model not preloaded; loading now: "
+                    f"{draft_model.model_id}"
+                )
                 draft_model.load()
-                # Validate target tokenizer compat AFTER load
-                draft_model.validate_tokenizer_compat(tokenizer)
+            # Validate target tokenizer compat AFTER load (uses configured threshold)
+            draft_model.validate_tokenizer_compat(
+                tokenizer, min_overlap=specprefill_cfg.min_overlap
+            )
+            logger.info(
+                f"SpecPrefill pipeline starting (keep_pct={specprefill_cfg.keep_pct}, "
+                f"n_lookahead={specprefill_cfg.n_lookahead})"
+            )
             # Run full SpecPrefill pipeline (4 phases).
             draft_kv = draft_prefill(draft_model, prompt_tokens, specprefill_cfg)
             _, q_vecs = draft_lookahead(draft_model, prompt_tokens, specprefill_cfg)
@@ -482,6 +501,19 @@ def warmup_inference(
     model_id: ModelId,
 ) -> int:
     logger.info(f"warming up inference for instance: {model_id}")
+
+    # Eagerly preload SpecPrefill draft model so the first long-prompt prefill
+    # isn't blocked by HF download. Best-effort: failures are logged and the
+    # lazy-load path inside prefill() will retry.
+    try:
+        from exo.worker.engines.mlx.spec_prefill import preload_draft_model
+
+        preload_draft_model()
+    except Exception as e:
+        logger.warning(
+            f"SpecPrefill draft preload raised during warmup "
+            f"({type(e).__name__}: {e}); continuing without it"
+        )
 
     content = InputMessageContent(
         "Prompt to warm up the inference engine. Repeat this."

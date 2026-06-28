@@ -65,6 +65,7 @@ class SpecPrefillConfig:
     draft_model_id: str = constants.SPEC_PREFILL_DRAFT_MODEL
     keep_pct: int = constants.SPEC_PREFILL_KEEP_PCT
     min_prompt_tokens: int = constants.SPEC_PREFILL_MIN_PROMPT_TOKENS
+    min_overlap: float = constants.SPEC_PREFILL_MIN_OVERLAP
     n_lookahead: int = 8  # tokens to generate in Phase 2
     chunk_size: int = 32  # tokens per chunk in Phase 3 scoring
 
@@ -95,8 +96,17 @@ class DraftModel:
     def is_loaded(self) -> bool:
         return self.model is not None
 
-    def validate_tokenizer_compat(self, target_tokenizer) -> None:
-        """Verify draft vocab overlaps with target by >= 99%."""
+    def validate_tokenizer_compat(self, target_tokenizer, min_overlap: float | None = None) -> None:
+        """Verify draft vocab overlaps with target above the configured threshold.
+
+        Args:
+            target_tokenizer: target model's tokenizer wrapper
+            min_overlap: required fraction of target tokens covered by draft vocab.
+                Defaults to constants.SPEC_PREFILL_MIN_OVERLAP (env
+                EXO_SPEC_PREFILL_MIN_OVERLAP, default 0.95).
+        """
+        if min_overlap is None:
+            min_overlap = constants.SPEC_PREFILL_MIN_OVERLAP
         if not self.is_loaded():
             raise RuntimeError("Draft model not loaded; call load() first")
         draft_vocab = set(self.tokenizer.get_vocab().values())
@@ -104,13 +114,37 @@ class DraftModel:
         if not target_vocab:
             raise ValueError("Target tokenizer has empty vocab")
         overlap = len(draft_vocab & target_vocab) / len(target_vocab)
-        if overlap < 0.99:
+        if overlap < min_overlap:
             raise ValueError(
-                f"Tokenizer vocab overlap {overlap:.3f} < 0.99 between "
+                f"Tokenizer vocab overlap {overlap:.3f} < {min_overlap:.3f} between "
                 f"draft ({self.model_id}) and target. SpecPrefill requires "
                 f"near-identical vocab so token IDs map 1:1."
             )
-        logger.info(f"Draft tokenizer compat OK ({overlap:.3f} overlap)")
+        logger.info(f"Draft tokenizer compat OK ({overlap:.3f} >= {min_overlap:.3f} overlap)")
+
+
+def preload_draft_model() -> DraftModel | None:
+    """Eagerly load the draft model so first prefill isn't blocked by HF download.
+
+    Safe to call when SpecPrefill is disabled: returns None without loading.
+    Catches all errors and logs them; never raises (this is a warmup optimization).
+    """
+    if not constants.SPEC_PREFILL_ENABLED:
+        logger.debug("SpecPrefill disabled; skipping draft model preload")
+        return None
+    try:
+        draft = get_draft_model()
+        if not draft.is_loaded():
+            logger.info(f"Pre-loading SpecPrefill draft model: {draft.model_id}")
+            draft.load()
+            logger.info(f"SpecPrefill draft model loaded: {draft.model_id}")
+        return draft
+    except Exception as e:
+        logger.warning(
+            f"SpecPrefill draft model preload failed ({type(e).__name__}: {e}); "
+            "will retry lazily on first prefill"
+        )
+        return None
 
 
 # Module-level singleton (one draft model per exo node, loaded lazily)
