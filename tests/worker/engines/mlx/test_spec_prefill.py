@@ -65,12 +65,18 @@ def test_validate_tokenizer_compat_low_overlap_raises():
 
 
 def test_draft_prefill_requires_loaded_model():
-    """draft_prefill raises RuntimeError if draft model not loaded."""
+    """draft_prefill returns None (via @safe_specprefill) when draft model not loaded.
+
+    The @safe_specprefill decorator catches any Exception and returns None to
+    signal fallback to the caller (generate.py:prefill()). Previously this
+    function raised RuntimeError directly; the decorator now swallows that
+    exception and returns None so callers can detect the failure and fall
+    through to stream_generate.
+    """
     dm = DraftModel("fake")
     cfg = SpecPrefillConfig()
     import mlx.core as mx
-    with pytest.raises(RuntimeError, match="must be loaded"):
-        draft_prefill(dm, mx.array([1, 2, 3]), cfg)
+    assert draft_prefill(dm, mx.array([1, 2, 3]), cfg) is None
 
 
 def test_q_vector_capture_context_manager():

@@ -16,9 +16,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from functools import wraps
 from typing import TYPE_CHECKING
 
 import mlx.core as mx
+
+from mlx_lm import stream_generate
 
 from exo.worker.engines.mlx import constants
 
@@ -27,6 +30,32 @@ if TYPE_CHECKING:
     from mlx_lm.tokenizer_utils import TokenizerWrapper
 
 logger = logging.getLogger(__name__)
+
+
+def safe_specprefill(fallback_fn):
+    """Decorator that catches any exception in SpecPrefill and falls back to fallback_fn.
+
+    Wrapped functions return None on any exception so the caller (e.g.,
+    generate.py:prefill()) can detect the failure and fall through to
+    fallback_fn. This provides defense-in-depth so that a single phase
+    failure (e.g., tokenizer mismatch, draft model load failure, Q-vector
+    capture failure, importance scoring failure, sparse prefill failure)
+    does not crash the entire generation pipeline.
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                logger.warning(
+                    f"SpecPrefill {func.__name__} failed ({type(e).__name__}: {e}); "
+                    f"falling back to {fallback_fn.__name__}"
+                )
+                # Return None to signal fallback (caller checks)
+                return None
+        return wrapper
+    return decorator
 
 
 @dataclass
@@ -96,6 +125,7 @@ def get_draft_model() -> DraftModel:
     return _draft_model
 
 
+@safe_specprefill(stream_generate)
 def draft_prefill(
     draft_model: DraftModel,
     prompt_tokens: mx.array,
@@ -106,7 +136,6 @@ def draft_prefill(
     Returns:
         Draft KV cache list (one entry per draft layer). Used by Phase 2.
     """
-    from mlx_lm import stream_generate
     from mlx_lm.sample_utils import make_sampler
 
     if not draft_model.is_loaded():
@@ -193,6 +222,7 @@ class _QVectorCapture:
         self._hooks.clear()
 
 
+@safe_specprefill(stream_generate)
 def draft_lookahead(
     draft_model: DraftModel,
     prompt_tokens: mx.array,
@@ -238,6 +268,7 @@ def draft_lookahead(
     return generated_ids, q_by_layer
 
 
+@safe_specprefill(stream_generate)
 def score_importance(
     q_vectors: dict[int, mx.array],
     draft_kv_cache: list,
@@ -303,6 +334,7 @@ def score_importance(
     return importance
 
 
+@safe_specprefill(stream_generate)
 def select_keep_indices(
     importance: mx.array,
     prompt_tokens: mx.array,
@@ -395,6 +427,7 @@ class _RoPEPatcher:
                 pass
 
 
+@safe_specprefill(stream_generate)
 def sparse_prefill_target(
     target_model: "Model",
     prompt_tokens: mx.array,
@@ -435,7 +468,6 @@ def sparse_prefill_target(
 
     try:
         with _RoPEPatcher(target_model, keep_indices, num_tokens):
-            from mlx_lm import stream_generate
             for _ in stream_generate(
                 target_model,
                 target_model.tokenizer if hasattr(target_model, 'tokenizer') else None,
