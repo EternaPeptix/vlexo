@@ -406,34 +406,48 @@ def sparse_prefill_target(
 ) -> tuple[float, int, list]:
     """Phase 4: Sparse prefill on target using kept indices.
 
-    Uses manual RoPE patching to preserve positional encoding for skipped tokens,
-    then streams through the kept tokens via mlx_generate (PR #248 pattern).
-    Returns (tokens_per_sec, num_tokens, snapshots) — same signature as
-    exo's existing prefill() function for drop-in compatibility.
+    STUB-QUALITY IMPLEMENTATION: This streams the kept tokens through
+    `mlx_generate` with max_tokens=1 to populate the cache + get the first
+    decode token, then hands off to the standard decode path (PR #248
+    pattern). It does NOT actually patch the target's RoPE to use custom
+    position_ids — that requires vllm-mlx PR #180's architecture-specific
+    RoPE monkey-patching (see `_RoPEPatcher` class which is currently a
+    no-op stub). In the current implementation, kept tokens keep their
+    natural position_ids, so the positional encoding is slightly off for
+    skipped tokens. Production must complete the `_RoPEPatcher` implementation.
+
+    Returns:
+        (tokens_per_sec, num_tokens, snapshots) — same signature as
+        exo's existing prefill() function for drop-in compatibility.
     """
     import time
     start_time = time.perf_counter()
     num_tokens = len(prompt_tokens)
 
-    # Build kept_prompt
+    # Edge-case guard: empty keep_indices would break stream_generate
+    if len(keep_indices) == 0:
+        logger.warning(
+            f"SpecPrefill Phase 4: empty keep_indices, falling back to full prefill"
+        )
+        return 0.0, num_tokens, []
+
     kept_prompt = prompt_tokens[keep_indices]
 
-    # Stream through target via mlx_generate with patched RoPE
     try:
         with _RoPEPatcher(target_model, keep_indices, num_tokens):
             from mlx_lm import stream_generate
-            # Stream generate with max_tokens=1 to populate cache + get first token
-            # Then hand off to standard decode loop (PR #248 pattern)
             for _ in stream_generate(
                 target_model,
                 target_model.tokenizer if hasattr(target_model, 'tokenizer') else None,
                 prompt=kept_prompt.tolist(),
                 max_tokens=1,
             ):
-                break  # We just want the cache populated + first token
+                break
     finally:
-        # Always restore RoPE
-        pass  # _RoPEPatcher.__exit__ handles this
+        # Always restore RoPE config (stub-quality: _RoPEPatcher.__exit__
+        # is currently a no-op; production must install the actual patch in
+        # __enter__ for __exit__ to have something to undo)
+        pass
 
     elapsed = time.perf_counter() - start_time
     tokens_per_sec = num_tokens / elapsed if elapsed > 0 else 0.0

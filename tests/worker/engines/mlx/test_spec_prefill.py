@@ -210,8 +210,7 @@ def test_select_keep_indices_non_divisible_length():
 
 def test_sparse_prefill_target_signature():
     """sparse_prefill_target has correct signature and returns the right tuple shape."""
-    import mlx.core as mx
-    from src.exo.worker.engines.mlx.spec_prefill import sparse_prefill_target, cleanup_rope, SpecPrefillConfig
+    from src.exo.worker.engines.mlx.spec_prefill import sparse_prefill_target, cleanup_rope
     import inspect
     sig = inspect.signature(sparse_prefill_target)
     params = list(sig.parameters.keys())
@@ -230,6 +229,7 @@ def test_sparse_prefill_target_signature():
 def test_rope_patcher_compute_position_ids():
     """_RoPEPatcher assigns nearest preceding kept position to skipped tokens."""
     import mlx.core as mx
+
     from src.exo.worker.engines.mlx.spec_prefill import _RoPEPatcher
     kept = mx.array([0, 3, 5, 7], dtype=mx.int32)
     patcher = _RoPEPatcher(model=None, kept_indices=kept, prompt_len=10)
@@ -239,8 +239,33 @@ def test_rope_patcher_compute_position_ids():
 
 def test_cleanup_rope_no_crash_on_no_rope():
     """cleanup_rope doesn't crash on a model without a .rope attribute."""
-    from src.exo.worker.engines.mlx.spec_prefill import cleanup_rope
     # MagicMock without 'model' attribute simulates no RoPE
     fake_model = MagicMock(spec=[])  # no attributes
     cleanup_rope(fake_model)  # should not raise
+
+
+def test_rope_patcher_all_kept():
+    """When all positions are kept, position_ids are [0, 1, 2, ..., n-1]."""
+    import mlx.core as mx
+
+    from src.exo.worker.engines.mlx.spec_prefill import _RoPEPatcher
+
+    n = 5
+    kept = mx.arange(n, dtype=mx.int32)
+    patcher = _RoPEPatcher(model=None, kept_indices=kept, prompt_len=n)
+    pos_ids = patcher.position_ids.tolist()
+    assert pos_ids == list(range(n))
+
+
+def test_rope_patcher_first_only():
+    """When only position 0 is kept, all skipped positions map to 0."""
+    import mlx.core as mx
+
+    from src.exo.worker.engines.mlx.spec_prefill import _RoPEPatcher
+
+    n = 5
+    kept = mx.array([0], dtype=mx.int32)
+    patcher = _RoPEPatcher(model=None, kept_indices=kept, prompt_len=n)
+    pos_ids = patcher.position_ids.tolist()
+    assert pos_ids == [0] * n
 
