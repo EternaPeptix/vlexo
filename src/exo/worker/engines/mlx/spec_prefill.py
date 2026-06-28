@@ -236,3 +236,110 @@ def draft_lookahead(
         q_by_layer[layer_idx] = mx.stack(q_list, axis=0) if q_list else mx.zeros((config.n_lookahead, 1, 1))
 
     return generated_ids, q_by_layer
+
+
+def score_importance(
+    q_vectors: dict[int, mx.array],
+    draft_kv_cache: list,
+    prompt_tokens: mx.array,
+    config: SpecPrefillConfig,
+) -> mx.array:
+    """Phase 3: Score prompt token importance via attention from draft model.
+
+    For each layer: importance = softmax(Q @ K^T / sqrt(d)), averaged across lookahead positions.
+    Then averaged across layers.
+
+    Returns:
+        importance: array of shape [N] (one score per prompt token)
+    """
+    import math
+
+    if not q_vectors:
+        # No Q vectors captured; return uniform importance (all tokens kept)
+        return mx.ones(len(prompt_tokens))
+
+    # Get K (key) vectors from draft KV cache
+    # In MLX, draft KV cache is typically a list of (K, V) tuples per layer
+    # K shape per layer: [batch, n_heads, seq_len, head_dim]
+    layer_importances = []
+    for layer_idx, q in q_vectors.items():
+        if layer_idx >= len(draft_kv_cache):
+            continue
+        kv = draft_kv_cache[layer_idx]
+        # Extract K from cache (handle different cache formats)
+        if isinstance(kv, tuple) and len(kv) >= 1:
+            k = kv[0]
+        elif hasattr(kv, 'keys'):
+            k = kv.keys
+        else:
+            continue
+        # k shape: [batch, n_heads, seq, head_dim]; q shape: [n_lookahead, n_heads, head_dim]
+        # Compute attention scores: softmax(Q @ K^T / sqrt(d)) per head
+        # Simplified: mean over heads and lookahead positions
+        d = q.shape[-1]
+        scores = (q[:, None, :] @ k[0].transpose(0, 2, 1)) / math.sqrt(d)  # [n_lookahead, n_heads, seq]
+        # Average over lookahead and heads
+        importance_layer = mx.mean(scores, axis=(0, 1))  # [seq]
+        # Trim or pad to match prompt_tokens length
+        if len(importance_layer) > len(prompt_tokens):
+            importance_layer = importance_layer[:len(prompt_tokens)]
+        elif len(importance_layer) < len(prompt_tokens):
+            # Pad with zeros for missing positions
+            importance_layer = mx.concatenate([
+                importance_layer,
+                mx.zeros(len(prompt_tokens) - len(importance_layer))
+            ])
+        layer_importances.append(importance_layer)
+
+    if not layer_importances:
+        return mx.ones(len(prompt_tokens))
+
+    # Average importance across layers
+    importance = mx.mean(mx.stack(layer_importances, axis=0), axis=0)  # [N]
+    return importance
+
+
+def select_keep_indices(
+    importance: mx.array,
+    prompt_tokens: mx.array,
+    config: SpecPrefillConfig,
+) -> mx.array:
+    """Phase 3 (cont'd): Chunk importance into windows, take top keep_pct%.
+
+    Returns:
+        keep_indices: sorted array of token positions to keep (ascending)
+    """
+    N = len(prompt_tokens)
+    if N == 0:
+        return mx.array([], dtype=mx.int32)
+
+    chunk_size = config.chunk_size
+    n_chunks = (N + chunk_size - 1) // chunk_size  # ceiling division
+    if n_chunks == 0:
+        return mx.array(list(range(N)), dtype=mx.int32)
+
+    # Score each chunk as mean importance in that chunk
+    chunk_scores = mx.zeros(n_chunks)
+    for chunk_idx in range(n_chunks):
+        start = chunk_idx * chunk_size
+        end = min(start + chunk_size, N)
+        chunk_scores[chunk_idx] = mx.mean(importance[start:end])
+
+    # Determine how many chunks to keep
+    n_keep_chunks = max(1, int(n_chunks * config.keep_pct / 100))
+    # Get top n_keep_chunks chunk indices by score
+    sorted_indices = mx.argsort(-chunk_scores)  # descending
+    keep_chunk_set = set(int(x) for x in sorted_indices[:n_keep_chunks].tolist())
+
+    # Expand kept chunks to token indices
+    keep_indices = []
+    for chunk_idx in sorted(keep_chunk_set):
+        start = chunk_idx * chunk_size
+        end = min(start + chunk_size, N)
+        keep_indices.extend(range(start, end))
+
+    if not keep_indices:
+        # Safety: keep at least first token
+        return mx.array([0], dtype=mx.int32)
+
+    return mx.array(keep_indices, dtype=mx.int32)

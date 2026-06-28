@@ -8,6 +8,8 @@ from src.exo.worker.engines.mlx.spec_prefill import (
     SpecPrefillConfig,
     draft_prefill,
     get_draft_model,
+    score_importance,
+    select_keep_indices,
 )
 
 
@@ -99,3 +101,41 @@ def test_q_vector_capture_positive_path():
     # Should enter and exit without error
     with _QVectorCapture(dm.model, n_lookahead=8):
         pass
+
+
+def test_select_keep_indices_basic():
+    """select_keep_indices returns sorted unique indices covering top chunks."""
+    import mlx.core as mx
+    from src.exo.worker.engines.mlx.spec_prefill import select_keep_indices
+    cfg = SpecPrefillConfig(keep_pct=50, chunk_size=10)
+    importance = mx.array([0.1, 0.2, 0.9, 0.8, 0.3, 0.4, 0.7, 0.6, 0.5, 0.0] * 2)  # 20 tokens
+    prompt = mx.zeros(20, dtype=mx.int32)
+    keep = select_keep_indices(importance, prompt, cfg)
+    # 20 tokens / chunk_size 10 = 2 chunks; keep 50% = 1 chunk = 10 tokens
+    assert len(keep) == 10
+    # Indices should be sorted ascending
+    keep_list = keep.tolist()
+    assert keep_list == sorted(keep_list)
+
+
+def test_select_keep_indices_all_kept_when_uniform():
+    """When all importance is equal, keep_pct picks the first chunks."""
+    import mlx.core as mx
+    from src.exo.worker.engines.mlx.spec_prefill import select_keep_indices
+    cfg = SpecPrefillConfig(keep_pct=25, chunk_size=4)
+    importance = mx.ones(16)  # all equal
+    prompt = mx.zeros(16, dtype=mx.int32)
+    keep = select_keep_indices(importance, prompt, cfg)
+    # 16/4 = 4 chunks; keep 25% = 1 chunk = 4 tokens
+    assert len(keep) == 4
+    assert keep.tolist() == [0, 1, 2, 3]
+
+
+def test_select_keep_indices_empty_prompt():
+    """Empty prompt returns empty keep_indices."""
+    import mlx.core as mx
+    from src.exo.worker.engines.mlx.spec_prefill import select_keep_indices
+    cfg = SpecPrefillConfig()
+    keep = select_keep_indices(mx.array([]), mx.array([], dtype=mx.int32), cfg)
+    assert len(keep) == 0
+
