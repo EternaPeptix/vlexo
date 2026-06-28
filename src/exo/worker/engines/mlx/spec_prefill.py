@@ -52,15 +52,36 @@ class DraftModel:
         self.tokenizer = None  # loaded lazily
 
     def load(self) -> None:
-        """Load model + tokenizer. Tokenizer compat validated vs target."""
-        raise NotImplementedError  # implemented in Task 3
+        """Load model + tokenizer via mlx_lm.load. Validates tokenizer compat if target_tokenizer provided."""
+        if self.is_loaded():
+            return
+        from mlx_lm import load as mlx_lm_load
+        logger.info(f"Loading SpecPrefill draft model: {self.model_id}")
+        try:
+            self.model, self.tokenizer = mlx_lm_load(self.model_id)
+        except Exception as e:
+            logger.error(f"Failed to load draft model {self.model_id}: {e}")
+            raise
 
     def is_loaded(self) -> bool:
         return self.model is not None
 
     def validate_tokenizer_compat(self, target_tokenizer) -> None:
-        """Verify draft vocab overlaps with target by >= 99%. Raise ValueError otherwise."""
-        raise NotImplementedError  # implemented in Task 3
+        """Verify draft vocab overlaps with target by >= 99%."""
+        if not self.is_loaded():
+            raise RuntimeError("Draft model not loaded; call load() first")
+        draft_vocab = set(self.tokenizer.get_vocab().values())
+        target_vocab = set(target_tokenizer.get_vocab().values())
+        if not target_vocab:
+            raise ValueError("Target tokenizer has empty vocab")
+        overlap = len(draft_vocab & target_vocab) / len(target_vocab)
+        if overlap < 0.99:
+            raise ValueError(
+                f"Tokenizer vocab overlap {overlap:.3f} < 0.99 between "
+                f"draft ({self.model_id}) and target. SpecPrefill requires "
+                f"near-identical vocab so token IDs map 1:1."
+            )
+        logger.info(f"Draft tokenizer compat OK ({overlap:.3f} overlap)")
 
 
 # Module-level singleton (one draft model per exo node, loaded lazily)
