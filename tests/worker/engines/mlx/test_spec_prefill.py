@@ -271,16 +271,36 @@ def test_rope_patcher_first_only():
 
 
 def test_specprefill_config_disabled_by_default():
-    """SpecPrefillConfig() defaults to disabled (EXO_SPEC_PREFILL unset)."""
-    import os
+    """SpecPrefillConfig() defaults to disabled when EXO_SPEC_PREFILL is not '1'/'true'/'yes'.
 
-    # Ensure env var is unset for this test
-    os.environ.pop("EXO_SPEC_PREFILL", None)
-
+    SPEC_PREFILL_ENABLED is captured at constants.py import time (module-level
+    env var read). Test verifies the dataclass wires the field correctly: with
+    EXO_SPEC_PREFILL unset in the test environment, the dataclass default
+    bound at import time should be False.
+    """
     from src.exo.worker.engines.mlx.spec_prefill import SpecPrefillConfig
 
     cfg = SpecPrefillConfig()
-    # When env var is unset, enabled should be False
-    # (string "" not in ("1", "true", "yes"))
+    # Default comes from constants.SPEC_PREFILL_ENABLED at import time.
+    # When EXO_SPEC_PREFILL is not '1'/'true'/'yes', enabled must be False.
     assert cfg.enabled is False
+
+
+def test_specprefill_config_field_wiring():
+    """SpecPrefillConfig has a bool `enabled` field wired to constants.
+
+    SPEC_PREFILL_ENABLED is captured at constants.py module import time and
+    bound as the dataclass default. We can't re-read the env var after import
+    (the default is already frozen), so we verify the wiring is correct:
+    the field exists, is a bool, and is consistent with the constants module.
+    """
+    from src.exo.worker.engines.mlx import constants
+    from src.exo.worker.engines.mlx.spec_prefill import SpecPrefillConfig
+
+    cfg = SpecPrefillConfig()
+    assert hasattr(cfg, "enabled")
+    assert isinstance(cfg.enabled, bool)
+    # The dataclass default must mirror the constants module value
+    # (proves the wiring: constants → dataclass default).
+    assert cfg.enabled == constants.SPEC_PREFILL_ENABLED
 

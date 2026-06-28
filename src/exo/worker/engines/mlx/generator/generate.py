@@ -56,7 +56,6 @@ from exo.worker.engines.mlx.constants import (
     MAX_TOKENS,
 )
 from exo.worker.engines.mlx.generator.remote_prefill import remote_prefill
-from exo.worker.engines.mlx.spec_prefill import SpecPrefillConfig
 from exo.worker.engines.mlx.types import KVCacheType, Model
 from exo.worker.engines.mlx.utils_mlx import (
     apply_chat_template,
@@ -292,6 +291,13 @@ def prefill(
 ) -> tuple[float, int, list[CacheSnapshot]]:
     """Prefill the KV cache with prompt tokens.
 
+    Three modes:
+    1. If SpecPrefill is enabled (EXO_SPEC_PREFILL=1) and not pipeline-sharded
+       and prompt >= min_prompt_tokens: run SpecPrefill (draft model scoring
+       + sparse target prefill via PR #180 algorithm).
+    2. Pipeline-sharded: run pipeline_parallel_prefill.
+    3. Default: run stream_generate.
+
     This runs the model over the prompt tokens to populate the cache,
     then trims off the extra generated token.
 
@@ -304,16 +310,22 @@ def prefill(
 
     logger.info(f"Prefilling {num_tokens} tokens...")
 
+    # Cache the pipeline-detection result: used in the SpecPrefill guard below
+    # and again in the dispatch path. Avoids iterating model.layers twice.
+    is_pipeline_model = _has_pipeline_communication_layer(model)
+
     # SpecPrefill branch: when enabled (EXO_SPEC_PREFILL=1) and the target is
     # not pipeline-sharded, use a small draft model to score prompt token
     # importance and prefill only the top-K% of tokens on the target. This
     # can significantly reduce TTFT for long prompts. Any failure falls
     # through to the existing stream_generate / pipeline_parallel_prefill
     # paths below, so SpecPrefill is best-effort and never breaks inference.
+    from exo.worker.engines.mlx.spec_prefill import SpecPrefillConfig
+
     specprefill_cfg = SpecPrefillConfig()
     if (
         specprefill_cfg.enabled
-        and not _has_pipeline_communication_layer(model)
+        and not is_pipeline_model
         and num_tokens >= specprefill_cfg.min_prompt_tokens
     ):
         try:
@@ -329,9 +341,10 @@ def prefill(
 
             draft_model = get_draft_model()
             if not draft_model.is_loaded():
-                # Validate target tokenizer compat before loading draft
-                draft_model.validate_tokenizer_compat(tokenizer)
+                # Load first (validate_tokenizer_compat requires is_loaded)
                 draft_model.load()
+                # Validate target tokenizer compat AFTER load
+                draft_model.validate_tokenizer_compat(tokenizer)
             # Run full SpecPrefill pipeline (4 phases).
             draft_kv = draft_prefill(draft_model, prompt_tokens, specprefill_cfg)
             _, q_vecs = draft_lookahead(draft_model, prompt_tokens, specprefill_cfg)
@@ -395,12 +408,10 @@ def prefill(
     logger.info("Starting prefill")
 
 
-    is_pipeline = _has_pipeline_communication_layer(model)
-
     prefill_step_size = 4096
 
     try:
-        if is_pipeline and num_tokens >= prefill_step_size:
+        if is_pipeline_model and num_tokens >= prefill_step_size:
             set_pipeline_queue_sends(model, queue_sends=True)
             assert group is not None, "Pipeline prefill requires a distributed group"
             pipeline_parallel_prefill(
