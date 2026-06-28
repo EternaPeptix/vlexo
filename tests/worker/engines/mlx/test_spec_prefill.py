@@ -269,3 +269,18 @@ def test_rope_patcher_first_only():
     pos_ids = patcher.position_ids.tolist()
     assert pos_ids == [0] * n
 
+
+def test_specprefill_config_disabled_by_default():
+    """SpecPrefillConfig() defaults to disabled (EXO_SPEC_PREFILL unset)."""
+    import os
+
+    # Ensure env var is unset for this test
+    os.environ.pop("EXO_SPEC_PREFILL", None)
+
+    from src.exo.worker.engines.mlx.spec_prefill import SpecPrefillConfig
+
+    cfg = SpecPrefillConfig()
+    # When env var is unset, enabled should be False
+    # (string "" not in ("1", "true", "yes"))
+    assert cfg.enabled is False
+

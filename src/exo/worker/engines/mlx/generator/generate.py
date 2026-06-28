@@ -56,6 +56,7 @@ from exo.worker.engines.mlx.constants import (
     MAX_TOKENS,
 )
 from exo.worker.engines.mlx.generator.remote_prefill import remote_prefill
+from exo.worker.engines.mlx.spec_prefill import SpecPrefillConfig
 from exo.worker.engines.mlx.types import KVCacheType, Model
 from exo.worker.engines.mlx.utils_mlx import (
     apply_chat_template,
@@ -302,6 +303,66 @@ def prefill(
         return 0.0, 0, []
 
     logger.info(f"Prefilling {num_tokens} tokens...")
+
+    # SpecPrefill branch: when enabled (EXO_SPEC_PREFILL=1) and the target is
+    # not pipeline-sharded, use a small draft model to score prompt token
+    # importance and prefill only the top-K% of tokens on the target. This
+    # can significantly reduce TTFT for long prompts. Any failure falls
+    # through to the existing stream_generate / pipeline_parallel_prefill
+    # paths below, so SpecPrefill is best-effort and never breaks inference.
+    specprefill_cfg = SpecPrefillConfig()
+    if (
+        specprefill_cfg.enabled
+        and not _has_pipeline_communication_layer(model)
+        and num_tokens >= specprefill_cfg.min_prompt_tokens
+    ):
+        try:
+            from exo.worker.engines.mlx.spec_prefill import (
+                cleanup_rope,
+                draft_lookahead,
+                draft_prefill,
+                get_draft_model,
+                score_importance,
+                select_keep_indices,
+                sparse_prefill_target,
+            )
+
+            draft_model = get_draft_model()
+            if not draft_model.is_loaded():
+                # Validate target tokenizer compat before loading draft
+                draft_model.validate_tokenizer_compat(tokenizer)
+                draft_model.load()
+            # Run full SpecPrefill pipeline (4 phases).
+            draft_kv = draft_prefill(draft_model, prompt_tokens, specprefill_cfg)
+            _, q_vecs = draft_lookahead(draft_model, prompt_tokens, specprefill_cfg)
+            importance = score_importance(
+                q_vecs, draft_kv, prompt_tokens, specprefill_cfg
+            )
+            keep_indices = select_keep_indices(
+                importance, prompt_tokens, specprefill_cfg
+            )
+            try:
+                result = sparse_prefill_target(
+                    model,
+                    prompt_tokens,
+                    keep_indices,
+                    cache,
+                    specprefill_cfg,
+                    on_prefill_progress=on_prefill_progress,
+                    group=group,
+                )
+                return result
+            finally:
+                # Always restore RoPE state (no-op for stub-quality _RoPEPatcher,
+                # but the contract is: cleanup_rope is always safe to call).
+                cleanup_rope(model)
+        except Exception as e:
+            logger.warning(
+                f"SpecPrefill failed ({type(e).__name__}: {e}); "
+                "falling back to stream_generate"
+            )
+            # Fall through to existing paths below
+
     start_time = time.perf_counter()
     has_ssm = has_non_kv_caches(cache)
     snapshots: list[CacheSnapshot] = []
