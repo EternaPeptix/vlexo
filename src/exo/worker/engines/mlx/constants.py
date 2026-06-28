@@ -17,7 +17,7 @@ KV_BITS: int | None = _parse_optional_int("EXO_KV_BITS")
 
 # SpecPrefill env vars (read by SpecPrefillConfig in spec_prefill.py)
 SPEC_PREFILL_ENABLED: bool = os.environ.get("EXO_SPEC_PREFILL", "").lower() in ("1", "true", "yes")
-SPEC_PREFILL_DRAFT_MODEL: str = os.environ.get("EXO_SPEC_PREFILL_DRAFT", "mlx-community/GLM-4-9B-0414")
+SPEC_PREFILL_DRAFT_MODEL: str = os.environ.get("EXO_SPEC_PREFILL_DRAFT", "mlx-community/GLM-4-9B-0414-4bit")
 SPEC_PREFILL_KEEP_PCT: int = int(os.environ.get("EXO_SPEC_PREFILL_KEEP_PCT", "20"))
 SPEC_PREFILL_MIN_PROMPT_TOKENS: int = int(os.environ.get("EXO_SPEC_PREFILL_MIN_PROMPT_TOKENS", "4096"))
 
