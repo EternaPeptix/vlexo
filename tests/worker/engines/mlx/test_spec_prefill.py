@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 from src.exo.worker.engines.mlx.spec_prefill import (
     DraftModel,
     SpecPrefillConfig,
+    draft_prefill,
     get_draft_model,
 )
 
@@ -57,3 +58,12 @@ def test_validate_tokenizer_compat_low_overlap_raises():
     target_tok.get_vocab.return_value = {f"t{i}": i for i in target_vocab}
     with pytest.raises(ValueError, match="overlap"):
         dm.validate_tokenizer_compat(target_tok)
+
+
+def test_draft_prefill_requires_loaded_model():
+    """draft_prefill raises RuntimeError if draft model not loaded."""
+    dm = DraftModel("fake")
+    cfg = SpecPrefillConfig()
+    import mlx.core as mx
+    with pytest.raises(RuntimeError, match="must be loaded"):
+        draft_prefill(dm, mx.array([1, 2, 3]), cfg)
