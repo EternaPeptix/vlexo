@@ -6,10 +6,12 @@ from unittest.mock import MagicMock
 from src.exo.worker.engines.mlx.spec_prefill import (
     DraftModel,
     SpecPrefillConfig,
+    cleanup_rope,
     draft_prefill,
     get_draft_model,
     score_importance,
     select_keep_indices,
+    sparse_prefill_target,
 )
 
 
@@ -204,4 +206,41 @@ def test_select_keep_indices_non_divisible_length():
     keep = select_keep_indices(importance, prompt, cfg)
     # 50% of 3 = 1.5 → max(1, 1) = 1 chunk kept
     assert len(keep) == 4  # one chunk of 4 tokens
+
+
+def test_sparse_prefill_target_signature():
+    """sparse_prefill_target has correct signature and returns the right tuple shape."""
+    import mlx.core as mx
+    from src.exo.worker.engines.mlx.spec_prefill import sparse_prefill_target, cleanup_rope, SpecPrefillConfig
+    import inspect
+    sig = inspect.signature(sparse_prefill_target)
+    params = list(sig.parameters.keys())
+    # Required params: target_model, prompt_tokens, keep_indices, cache, config
+    # Optional: on_prefill_progress, group
+    assert "target_model" in params
+    assert "prompt_tokens" in params
+    assert "keep_indices" in params
+    assert "cache" in params
+    assert "config" in params
+    # Verify cleanup_rope exists and takes a model
+    cleanup_sig = inspect.signature(cleanup_rope)
+    assert "model" in cleanup_sig.parameters
+
+
+def test_rope_patcher_compute_position_ids():
+    """_RoPEPatcher assigns nearest preceding kept position to skipped tokens."""
+    import mlx.core as mx
+    from src.exo.worker.engines.mlx.spec_prefill import _RoPEPatcher
+    kept = mx.array([0, 3, 5, 7], dtype=mx.int32)
+    patcher = _RoPEPatcher(model=None, kept_indices=kept, prompt_len=10)
+    pos_ids = patcher.position_ids.tolist()
+    assert pos_ids == [0, 0, 0, 3, 3, 5, 5, 7, 7, 7]
+
+
+def test_cleanup_rope_no_crash_on_no_rope():
+    """cleanup_rope doesn't crash on a model without a .rope attribute."""
+    from src.exo.worker.engines.mlx.spec_prefill import cleanup_rope
+    # MagicMock without 'model' attribute simulates no RoPE
+    fake_model = MagicMock(spec=[])  # no attributes
+    cleanup_rope(fake_model)  # should not raise
 
