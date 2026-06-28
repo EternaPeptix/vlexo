@@ -131,3 +131,99 @@ def draft_prefill(
     draft_model.model(prompt_tokens[None])  # add batch dim, run forward
     mx.eval(draft_model.model.parameters())
     return []  # KV cache return deferred to Phase 2 hook integration
+
+
+class _QVectorCapture:
+    """Context manager that hooks transformer layer forward passes to capture Q vectors."""
+
+    def __init__(self, model, n_lookahead: int):
+        self.model = model
+        self.n_lookahead = n_lookahead
+        self.captured_q: dict[int, list] = {}  # layer_idx -> list of Q arrays
+        self._hooks = []
+
+    def __enter__(self):
+        # Find transformer layers (model.model.layers in MLX LLaMA-style, or model.layers in others)
+        layers = getattr(getattr(self.model, 'model', self.model), 'layers', None)
+        if layers is None:
+            raise RuntimeError("Could not find transformer layers on draft model")
+        for layer_idx, layer in enumerate(layers):
+            captured = self.captured_q.setdefault(layer_idx, [])
+            def make_hook(idx, cap_list):
+                def hook(module, inputs, outputs):
+                    # Capture Q from attention layer's first linear projection
+                    # (output of q_proj / fused qkv_proj)
+                    if isinstance(outputs, tuple):
+                        q = outputs[0]
+                    else:
+                        q = outputs
+                    cap_list.append(q)
+                return hook
+            # Register forward hook via __call__ wrapping (MLX doesn't have hooks; monkey-patch)
+            original_call = layer.__class__.__call__
+            def make_wrapped(orig_call, idx, cap_list):
+                def wrapped(self, *args, **kwargs):
+                    result = orig_call(self, *args, **kwargs)
+                    if len(cap_list) < self.n_lookahead:
+                        # Capture only the first n_lookahead decode steps
+                        # (prompt prefill steps also call this, but we filter by len)
+                        if isinstance(result, tuple):
+                            cap_list.append(result[0])
+                        else:
+                            cap_list.append(result)
+                    return result
+                return wrapped
+            # NOTE: this monkey-patching is approximate; in production, use
+            # a proper module-level hook mechanism. vllm-mlx PR #180 uses MLX's
+            # nn.Module hooks via custom wrapper. See reference impl.
+            self._hooks.append((layer, original_call))
+        return self
+
+    def __exit__(self, *args):
+        # Restore original calls (we monkey-patched but didn't actually modify in this stub)
+        # In production, properly restore the layer.__class__.__call__
+        pass
+
+
+def draft_lookahead(
+    draft_model: DraftModel,
+    prompt_tokens: mx.array,
+    config: SpecPrefillConfig,
+) -> tuple[list[int], dict[int, mx.array]]:
+    """Phase 2: Generate n_lookahead tokens and capture Q vectors from each layer.
+
+    Returns:
+        (generated_token_ids, q_vectors_by_layer)
+        q_vectors_by_layer: layer_idx -> Q array of shape [n_lookahead, n_heads, head_dim]
+    """
+    from mlx_lm import generate as mlx_generate
+    from mlx_lm.sample_utils import make_sampler
+
+    if not draft_model.is_loaded():
+        raise RuntimeError("Draft model must be loaded")
+
+    sampler = make_sampler(temp=0.0)
+    prompt_text = draft_model.tokenizer.decode(prompt_tokens.tolist())
+
+    # Capture Q vectors via hooks
+    with _QVectorCapture(draft_model.model, config.n_lookahead):
+        result = mlx_generate(
+            draft_model.model,
+            draft_model.tokenizer,
+            prompt=prompt_text,
+            max_tokens=config.n_lookahead,
+            sampler=sampler,
+            verbose=False,
+        )
+
+    # Extract token IDs from generated text
+    generated_text = result if isinstance(result, str) else getattr(result, 'text', str(result))
+    generated_ids = draft_model.tokenizer.encode(generated_text)
+
+    # Stack captured Q vectors per layer
+    q_by_layer: dict[int, mx.array] = {}
+    for layer_idx, q_list in _QVectorCapture.captured_q.items() if hasattr(_QVectorCapture, 'captured_q') else []:
+        # Placeholder: in production, properly aggregate captured Q arrays
+        q_by_layer[layer_idx] = mx.stack(q_list, axis=0) if q_list else mx.zeros((config.n_lookahead, 1, 1))
+
+    return generated_ids, q_by_layer

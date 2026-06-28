@@ -67,3 +67,13 @@ def test_draft_prefill_requires_loaded_model():
     import mlx.core as mx
     with pytest.raises(RuntimeError, match="must be loaded"):
         draft_prefill(dm, mx.array([1, 2, 3]), cfg)
+
+
+def test_q_vector_capture_context_manager():
+    """_QVectorCapture is a context manager (can be entered/exited)."""
+    from src.exo.worker.engines.mlx.spec_prefill import _QVectorCapture
+    dm = DraftModel("fake")
+    dm.model = MagicMock()
+    # Should be able to enter and exit without error
+    with _QVectorCapture(dm.model, n_lookahead=8):
+        pass
