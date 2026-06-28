@@ -39,8 +39,10 @@ from exo.worker.engines.mlx.generator.generate import (
 from exo.worker.engines.mlx.types import Model
 from exo.worker.engines.mlx.utils_mlx import (
     apply_chat_template,
+    mlx_force_oom,
     mx_all_gather_tasks,
     mx_any,
+    release_mlx_memory,
 )
 from exo.worker.engines.mlx.vision import VisionProcessor
 from exo.worker.runner.bootstrap import logger
