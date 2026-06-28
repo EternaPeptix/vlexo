@@ -147,39 +147,43 @@ class _QVectorCapture:
         layers = getattr(getattr(self.model, 'model', self.model), 'layers', None)
         if layers is None:
             raise RuntimeError("Could not find transformer layers on draft model")
-        for layer_idx, layer in enumerate(layers):
-            captured = self.captured_q.setdefault(layer_idx, [])
-            def make_hook(idx, cap_list):
-                def hook(module, inputs, outputs):
-                    # Capture Q from attention layer's first linear projection
-                    # (output of q_proj / fused qkv_proj)
-                    if isinstance(outputs, tuple):
-                        q = outputs[0]
-                    else:
-                        q = outputs
-                    cap_list.append(q)
-                return hook
-            # Register forward hook via __call__ wrapping (MLX doesn't have hooks; monkey-patch)
-            original_call = layer.__class__.__call__
-            def make_wrapped(orig_call, idx, cap_list):
-                def wrapped(self, *args, **kwargs):
-                    result = orig_call(self, *args, **kwargs)
-                    if len(cap_list) < self.n_lookahead:
-                        # Capture only the first n_lookahead decode steps
-                        # (prompt prefill steps also call this, but we filter by len)
-                        if isinstance(result, tuple):
-                            cap_list.append(result[0])
-                        else:
-                            cap_list.append(result)
-                    return result
-                return wrapped
-            # NOTE: this monkey-patching is a MINIMAL hook implementation
-            # that makes the stub functional. Production should use MLX's
-            # nn.Module hooks via vllm-mlx PR #180 for proper hook integration.
-            # The hook captures Q vectors from the first projection output
-            # of each transformer layer during the n_lookahead decode steps.
-            layer.__class__.__call__ = make_wrapped(original_call, layer_idx, captured)
-            self._hooks.append((layer.__class__, original_call))
+        try:
+            for layer_idx, layer in enumerate(layers):
+                captured = self.captured_q.setdefault(layer_idx, [])
+                # Register forward hook via __call__ wrapping (MLX doesn't have hooks; monkey-patch)
+                original_call = layer.__class__.__call__
+                # Capture n_lookahead from the _QVectorCapture instance, NOT from `self`
+                # inside `wrapped` — there `self` is the MLX layer module, not the capture
+                # instance, so reading self.n_lookahead would AttributeError.
+                captured_n_lookahead = self.n_lookahead
+                def make_wrapped(orig_call, idx, cap_list, n_look):
+                    def wrapped(self, *args, **kwargs):
+                        result = orig_call(self, *args, **kwargs)
+                        if len(cap_list) < n_look:
+                            # Capture only the first n_lookahead decode steps
+                            # (prompt prefill steps also call this, but we filter by len)
+                            if isinstance(result, tuple):
+                                cap_list.append(result[0])
+                            else:
+                                cap_list.append(result)
+                        return result
+                    return wrapped
+                # NOTE: this monkey-patching is a MINIMAL hook implementation
+                # that makes the stub functional. Production should use MLX's
+                # nn.Module hooks via vllm-mlx PR #180 for proper hook integration.
+                # The hook captures Q vectors from the first projection output
+                # of each transformer layer during the n_lookahead decode steps.
+                new_call = make_wrapped(original_call, layer_idx, captured, captured_n_lookahead)
+                layer.__class__.__call__ = new_call
+                self._hooks.append((layer.__class__, original_call))
+        except Exception:
+            # If any layer iteration fails, restore already-patched class __call__
+            # methods before re-raising so we don't leak partial monkey-patches.
+            # __exit__ will not run because __enter__ never returned self.
+            for cls, original_call in self._hooks:
+                cls.__call__ = original_call
+            self._hooks.clear()
+            raise
         return self
 
     def __exit__(self, *args):

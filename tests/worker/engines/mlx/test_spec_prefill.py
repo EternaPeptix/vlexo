@@ -79,3 +79,23 @@ def test_q_vector_capture_context_manager():
     with pytest.raises(RuntimeError, match="Could not find transformer layers"):
         with _QVectorCapture(dm.model, n_lookahead=8):
             pass
+
+
+def test_q_vector_capture_positive_path():
+    """_QVectorCapture successfully enters/exits when model has layers.
+
+    Positive-path coverage: verifies that the context manager can be
+    entered and exited without error when the model exposes a .layers
+    attribute. Does not verify Q-vector capture (the stub hooks monkey-
+    patch class.__call__ in a way that depends on real MLX layers).
+    """
+    from src.exo.worker.engines.mlx.spec_prefill import _QVectorCapture
+    dm = DraftModel("fake")
+    # Create a model mock with proper .layers attribute (a list of mocks).
+    # MagicMock() (no spec) auto-creates .model on access, so we set the
+    # full path .model.layers explicitly to mimic MLX LLaMA-style arch.
+    dm.model = MagicMock()
+    dm.model.model.layers = [MagicMock() for _ in range(3)]  # 3 layers
+    # Should enter and exit without error
+    with _QVectorCapture(dm.model, n_lookahead=8):
+        pass
