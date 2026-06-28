@@ -313,6 +313,20 @@ def main():
         os.environ["EXO_FAST_SYNCH"] = "false"
         logger.info("FAST_SYNCH forced OFF")
 
+    # Apply CLI flag overrides for SpecPrefill (CLI > env > default)
+    if args.spec_prefill is not None:
+        os.environ["EXO_SPEC_PREFILL"] = "1" if args.spec_prefill else ""
+        logger.info(f"SpecPrefill CLI override: EXO_SPEC_PREFILL={os.environ['EXO_SPEC_PREFILL']!r}")
+    if args.spec_prefill_draft is not None:
+        os.environ["EXO_SPEC_PREFILL_DRAFT"] = args.spec_prefill_draft
+        logger.info(f"SpecPrefill CLI override: EXO_SPEC_PREFILL_DRAFT={args.spec_prefill_draft!r}")
+    if args.spec_prefill_keep_pct is not None:
+        os.environ["EXO_SPEC_PREFILL_KEEP_PCT"] = str(args.spec_prefill_keep_pct)
+        logger.info(f"SpecPrefill CLI override: EXO_SPEC_PREFILL_KEEP_PCT={args.spec_prefill_keep_pct}")
+    if args.spec_prefill_min_prompt_tokens is not None:
+        os.environ["EXO_SPEC_PREFILL_MIN_PROMPT_TOKENS"] = str(args.spec_prefill_min_prompt_tokens)
+        logger.info(f"SpecPrefill CLI override: EXO_SPEC_PREFILL_MIN_PROMPT_TOKENS={args.spec_prefill_min_prompt_tokens}")
+
     node = anyio.run(Node.create, args)
     try:
         anyio.run(node.run)
@@ -341,6 +355,10 @@ class Args(FrozenModel):
     no_stdio: bool = False
     bootstrap_peers: list[str] = []
     libp2p_port: int
+    spec_prefill: bool | None = None
+    spec_prefill_draft: str | None = None
+    spec_prefill_keep_pct: int | None = None
+    spec_prefill_min_prompt_tokens: int | None = None
 
     @classmethod
     def parse(cls) -> Self:
@@ -432,6 +450,32 @@ class Args(FrozenModel):
             action="store_false",
             dest="fast_synch",
             help="Force MLX FAST_SYNCH off",
+        )
+
+        # SpecPrefill flags (override env vars)
+        parser.add_argument(
+            "--spec-prefill",
+            action="store_true",
+            default=None,
+            help="Enable SpecPrefill sparse prefill (overrides EXO_SPEC_PREFILL env var)",
+        )
+        parser.add_argument(
+            "--spec-prefill-draft",
+            type=str,
+            default=None,
+            help="Draft model HF repo id (overrides EXO_SPEC_PREFILL_DRAFT env var)",
+        )
+        parser.add_argument(
+            "--spec-prefill-keep-pct",
+            type=int,
+            default=None,
+            help="Percentage of prompt chunks to keep (overrides EXO_SPEC_PREFILL_KEEP_PCT)",
+        )
+        parser.add_argument(
+            "--spec-prefill-min-prompt-tokens",
+            type=int,
+            default=None,
+            help="Skip SpecPrefill for prompts shorter than this (overrides EXO_SPEC_PREFILL_MIN_PROMPT_TOKENS)",
         )
 
         args = parser.parse_args()
