@@ -1,5 +1,7 @@
 import os
 import resource
+import signal
+import sys
 import traceback
 from dataclasses import dataclass
 from typing import Self, cast
@@ -13,6 +15,26 @@ from exo.utils.channels import ClosedResourceError, MpReceiver, MpSender
 from exo.worker.engines.base import Builder
 
 logger: "loguru.Logger" = loguru.logger
+
+
+def _install_mlx_signal_handlers() -> None:
+    """Ensure Metal buffers are released when the runner is SIGTERM'd."""
+
+    def _cleanup_and_exit(signum: int, _frame: object) -> None:
+        try:
+            import mlx.core as mx
+
+            if mx.metal.is_available():
+                mx.synchronize()
+                mx.clear_cache()
+                mx.set_wired_limit(0)
+                mx.clear_cache()
+        except Exception as exc:
+            logger.warning(f"MLX cleanup on signal {signum} failed: {exc}")
+        sys.exit(128 + signum)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, _cleanup_and_exit)
 
 
 @dataclass(frozen=True)
@@ -57,6 +79,8 @@ def entrypoint(
         os.environ["MLX_METAL_FAST_SYNCH"] = "1"
 
     logger.info(f"Fast synch flag: {os.environ['MLX_METAL_FAST_SYNCH']}")
+
+    _install_mlx_signal_handlers()
 
     # Import main after setting global logger - this lets us just import logger from this module
     try:

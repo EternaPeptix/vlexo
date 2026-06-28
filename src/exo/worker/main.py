@@ -94,6 +94,7 @@ class Worker:
             base=0.5, cap=10.0
         )
         self._stopped: anyio.Event = anyio.Event()
+        self._shutting_down_runners: set[RunnerId] = set()
 
     async def run(self):
         logger.info("Starting Worker")
@@ -109,6 +110,7 @@ class Worker:
                 tg.start_soon(self._event_applier)
                 tg.start_soon(self._poll_connection_updates)
                 tg.start_soon(self._reconcile_custom_cards)
+                tg.start_soon(self._reconcile_orphaned_runners)
 
         finally:
             # Actual shutdown code - waits for all tasks to complete before executing.
@@ -140,6 +142,14 @@ class Worker:
 
                 if isinstance(event, InstanceDeleted):
                     self._instance_backoff.reset(event.instance_id)
+                    for runner_id, runner in list(self.runners.items()):
+                        if (
+                            runner.bound_instance.instance.instance_id
+                            == event.instance_id
+                        ):
+                            self._schedule_runner_shutdown(
+                                runner_id, event.instance_id
+                            )
 
                 # Buffer input image chunks for image editing
                 if isinstance(event, InputChunkReceived):
@@ -275,7 +285,7 @@ class Worker:
                 case Shutdown(runner_id=runner_id):
                     runner = self.runners.pop(runner_id)
                     try:
-                        with fail_after(3):
+                        with fail_after(60):
                             await runner.start_task(task)
                     except TimeoutError:
                         await self.event_sender.send(
@@ -359,6 +369,53 @@ class Worker:
                     await self._start_runner_task(task)
                 case task:
                     await self._start_runner_task(task)
+
+    def _schedule_runner_shutdown(
+        self, runner_id: RunnerId, instance_id: InstanceId
+    ) -> None:
+        if runner_id in self._shutting_down_runners:
+            return
+        if runner_id not in self.runners:
+            return
+        self._shutting_down_runners.add(runner_id)
+        self._tg.start_soon(self._graceful_shutdown_runner, runner_id, instance_id)
+
+    async def _graceful_shutdown_runner(
+        self, runner_id: RunnerId, instance_id: InstanceId
+    ) -> None:
+        runner = self.runners.pop(runner_id, None)
+        if runner is None:
+            self._shutting_down_runners.discard(runner_id)
+            return
+
+        shutdown_task = Shutdown(instance_id=instance_id, runner_id=runner_id)
+        logger.info(
+            f"Graceful MLX shutdown for runner {runner_id} "
+            f"(instance {instance_id})"
+        )
+        try:
+            with fail_after(60):
+                await runner.start_task(shutdown_task)
+        except TimeoutError:
+            logger.warning(
+                f"Graceful shutdown timed out for runner {runner_id}; "
+                "force killing subprocess"
+            )
+        finally:
+            runner.shutdown()
+            self._shutting_down_runners.discard(runner_id)
+
+    async def _reconcile_orphaned_runners(self) -> None:
+        while True:
+            await anyio.sleep(1)
+            for runner_id, runner in list(self.runners.items()):
+                instance_id = runner.bound_instance.instance.instance_id
+                if instance_id not in self.state.instances:
+                    logger.warning(
+                        f"Orphaned runner {runner_id} for missing instance "
+                        f"{instance_id}; scheduling graceful shutdown"
+                    )
+                    self._schedule_runner_shutdown(runner_id, instance_id)
 
     async def shutdown(self):
         self._tg.cancel_tasks()

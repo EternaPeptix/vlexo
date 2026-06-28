@@ -25,6 +25,7 @@ from .types import Model
 from .utils_mlx import (
     initialize_mlx,
     load_mlx_items,
+    mlx_cleanup,
 )
 from .vision import VisionProcessor
 
@@ -50,12 +51,11 @@ class MlxBuilder(Builder):
         ) = yield from load_mlx_items(bound_instance, self.group)
 
     def close(self) -> None:
-        with contextlib.suppress(NameError, AttributeError):
-            del self.inference_model
-        with contextlib.suppress(NameError, AttributeError):
-            del self.tokenizer
-        with contextlib.suppress(NameError, AttributeError):
-            del self.group
+        mlx_cleanup(self.inference_model, self.tokenizer, self.group)
+        self.inference_model = None
+        self.tokenizer = None
+        self.group = None
+        self.vision_processor = None
 
     def build(
         self,

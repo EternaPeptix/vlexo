@@ -366,14 +366,16 @@ def find_ip_prioritised(
             "unknown": 4,
         }
 
-    # RDMA prefers ethernet coordinator
+    # RDMA coordinator must be on the same fabric as the data path (rdma_en* over TB),
+    # otherwise JACCL QP setup races across Ethernet and the TB fabric and the cluster
+    # hangs or falls back to slow TCP. Thunderbolt first; ethernet last-resort.
     else:
         priority = {
-            "ethernet": 0,
-            "wifi": 1,
-            "unknown": 2,
-            "maybe_ethernet": 3,
-            "thunderbolt": 4,
+            "thunderbolt": 0,
+            "maybe_ethernet": 1,
+            "ethernet": 2,
+            "wifi": 3,
+            "unknown": 4,
         }
     return min(ips, key=lambda ip: priority.get(ip_to_type.get(ip, "unknown"), 2))
 

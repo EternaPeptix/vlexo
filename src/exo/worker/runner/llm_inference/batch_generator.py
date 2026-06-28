@@ -71,8 +71,6 @@ EXO_RUNNER_MUST_TIMEOUT = "EXO RUNNER MUST TIMEOUT"
 
 def _check_for_debug_prompts(task_params: TextGenerationTaskParams) -> None:
     """Check for debug prompt triggers in the input."""
-    from exo.worker.engines.mlx.utils_mlx import mlx_force_oom
-
     if len(task_params.input) == 0:
         return
     prompt = task_params.input[0].content
@@ -299,6 +297,7 @@ class SequentialGenerator(Engine):
 
     def close(self) -> None:
         del self.model, self.tokenizer, self.group
+        release_mlx_memory()
 
     def serve_prefill(self, request: PrefillRequest, wfile: BinaryIO) -> None:
         cache = run_prefill_for_request(
@@ -554,6 +553,7 @@ class BatchGenerator(Engine):
     def close(self) -> None:
         self._gen.close()
         del self.model, self.tokenizer, self.group
+        release_mlx_memory()
 
     def serve_prefill(self, request: PrefillRequest, wfile: BinaryIO) -> None:
         cache = run_prefill_for_request(

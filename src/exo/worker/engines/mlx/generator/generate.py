@@ -301,7 +301,7 @@ def prefill(
     if num_tokens == 0:
         return 0.0, 0, []
 
-    logger.debug(f"Prefilling {num_tokens} tokens...")
+    logger.info(f"Prefilling {num_tokens} tokens...")
     start_time = time.perf_counter()
     has_ssm = has_non_kv_caches(cache)
     snapshots: list[CacheSnapshot] = []
@@ -310,7 +310,7 @@ def prefill(
     def progress_callback(processed: int, total: int) -> None:
         elapsed = time.perf_counter() - start_time
         tok_per_sec = processed / elapsed if elapsed > 0 else 0
-        logger.debug(
+        logger.info(
             f"Prefill progress: {processed}/{total} tokens ({tok_per_sec:.1f} tok/s)"
         )
         if has_ssm:
@@ -393,7 +393,7 @@ def prefill(
 
     elapsed = time.perf_counter() - start_time
     tokens_per_sec = num_tokens / elapsed if elapsed > 0 else 0.0
-    logger.debug(
+    logger.info(
         f"Prefill complete: {num_tokens} tokens in {elapsed:.2f}s "
         f"({tokens_per_sec:.1f} tok/s)"
     )
@@ -805,7 +805,7 @@ def mlx_generate(
             generation_tps = (
                 generated_tokens / generation_elapsed if generation_elapsed > 0 else 0.0
             )
-            logger.debug(
+            logger.info(
                 f"Generation complete: prefill {prompt_tokens} tokens @ "
                 f"{prefill_tps:.1f} tok/s, generated {generated_tokens} tokens @ "
                 f"{generation_tps:.1f} tok/s"

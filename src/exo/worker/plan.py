@@ -59,8 +59,8 @@ def plan(
 ) -> Task | None:
     # Python short circuiting OR logic should evaluate these sequentially.
     return (
-        _cancel_tasks(runners, tasks)
-        or _kill_runner(runners, all_runners, instances)
+        _kill_runner(runners, all_runners, instances)
+        or _cancel_tasks(runners, tasks)
         or _create_runner(node_id, runners, all_runners, instances, instance_backoff)
         or _model_needs_download(
             node_id, runners, global_download_status, download_backoff

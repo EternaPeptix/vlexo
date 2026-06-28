@@ -818,16 +818,34 @@ def set_wired_limit_for_model(model_size: Memory):
     logger.info(f"Wired limit set to {max_rec_size}.")
 
 
+def release_mlx_memory() -> None:
+    """Return MLX/Metal buffers and wired memory to the OS."""
+    import gc
+
+    if not mx.metal.is_available():
+        gc.collect()
+        return
+
+    mx.synchronize()
+    mx.clear_cache()
+    mx.set_wired_limit(0)
+    mx.clear_cache()
+    gc.collect()
+
+    active_gb = mx.get_active_memory() / (1024**3)
+    cache_gb = mx.get_cache_memory() / (1024**3)
+    logger.info(
+        f"MLX memory released (active={active_gb:.2f} GB, cache={cache_gb:.2f} GB)"
+    )
+
+
 def mlx_cleanup(
     model: Model | None,
     tokenizer: TokenizerWrapper | None,
     group: mx.distributed.Group | None,
 ) -> None:
     del model, tokenizer, group
-    mx.clear_cache()
-    import gc
-
-    gc.collect()
+    release_mlx_memory()
 
 
 def mx_any(bool_: bool, group: mx.distributed.Group | None) -> bool:

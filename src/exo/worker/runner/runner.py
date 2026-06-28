@@ -1,3 +1,4 @@
+import contextlib
 import queue
 import threading
 import time
@@ -225,6 +226,14 @@ class Runner:
             if self._prefill_server is not None:
                 self._prefill_server.stop()
                 self._prefill_server = None
+            if not isinstance(self.current_status, RunnerShutdown):
+                with contextlib.suppress(Exception):
+                    self.generator.close()
+            else:
+                from exo.worker.engines.mlx.utils_mlx import release_mlx_memory
+
+                with contextlib.suppress(Exception):
+                    release_mlx_memory()
             self.task_receiver.close()
             if self._task_reader_thread is not None:
                 self._task_reader_thread.join(timeout=5)
