@@ -1,0 +1,46 @@
+
+# IDEA (PyCharm)
+# bench files
+# gitingest
+# host config snapshots
+# nix
+# python
+# rust
+# svelte
+# tmp
+# xcode / macos
+**/*.rs.bk
+**/.DS_Store
+**/__pycache__
+*.pdb
+*.xcuserdata
+*.xcuserdatad/
+*.xcuserstate
+.direnv/
+.idea
+.swp
+/.claude
+/.claude/skills
+/.codex
+/build/exo
+app/EXO/build/
+auto-model.env
+bench/**/*.json
+boot-exo-cluster.sh
+com.jeweled.exo.daemon.plist
+com.jeweled.exo.plist
+com.jeweled.exo.worker.plist
+dashboard/.svelte-kit/
+dashboard/build/
+dashboard/node_modules/
+digest.txt
+dist/
+finish-install.command
+hosts_*.json
+install-launchagent.sh
+launch-auto-model.sh
+launchagent-exo-worker.sh
+launchagent-exo.sh
+restart-cluster-tb.sh
+target/
+tmp/models
