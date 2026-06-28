@@ -63,6 +63,7 @@ from exo.worker.engines.mlx.utils_mlx import (
     mx_barrier,
     system_prompt_token_count,
 )
+from exo.worker.engines.mlx.spec_prefill import safe_specprefill
 from exo.worker.engines.mlx.vision import (
     MediaRegion,
     VisionProcessor,
@@ -279,6 +280,7 @@ def pipeline_parallel_prefill(
     )
 
 
+@safe_specprefill(stream_generate)
 def prefill(
     model: Model,
     tokenizer: TokenizerWrapper,
