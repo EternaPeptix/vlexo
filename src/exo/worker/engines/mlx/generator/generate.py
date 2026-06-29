@@ -721,7 +721,24 @@ def mlx_generate(
             )
         )
         prefix_hit_length = len(all_prompt_tokens) - len(prompt_tokens)
-        if prefix_hit_length > 0:
+        # Gate cache USE (not just update) by min_prefix_hit_length: a small
+        # prefix match (e.g., only the BOS token) can otherwise return a stale
+        # KV state for requests with completely different content after the
+        # prefix. The threshold was previously only enforced for update-vs-add
+        # decisions (line 818), not for whether to USE the cache at all.
+        # See: prefix-cache-stale-content bug where reasoning_content from a
+        # prior request leaked into a new request sharing only the system prompt.
+        if 0 < prefix_hit_length < min_prefix_hit_length:
+            logger.info(
+                f"KV cache match too short ({prefix_hit_length} < "
+                f"{min_prefix_hit_length}), discarding and using fresh cache"
+            )
+            caches = make_kv_cache(model=model)
+            prompt_tokens = all_prompt_tokens
+            matched_index = None
+            is_exact_hit = False
+            prefix_hit_length = 0
+        elif prefix_hit_length > 0:
             logger.info(
                 f"KV cache hit: {prefix_hit_length}/{len(all_prompt_tokens)} tokens cached ({100 * prefix_hit_length / len(all_prompt_tokens):.1f}%)"
             )
