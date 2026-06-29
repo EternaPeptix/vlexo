@@ -62,6 +62,60 @@ def safe_specprefill(fallback_fn):
     return decorator
 
 
+class _SafeTokenizerView:
+    """Defensive view over a tokenizer that supplies safe defaults for
+    attributes mlx_lm.stream_generate reads but which may be missing/None
+    on draft-model tokenizers from mlx-community (e.g. GLM-4-9B-0414-4bit
+    has eos_token_id=None).
+
+    Wraps the underlying tokenizer and proxies attribute reads through
+    getattr with sensible fallbacks. encode/decode delegate to the
+    underlying tokenizer when present.
+    """
+
+    _FALLBACK_EOS: list[int] = [0]
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        if name == "eos_token_ids":
+            val = getattr(self._inner, "eos_token_ids", None)
+            if val is None:
+                val = getattr(self._inner, "eos_token_id", None)
+            if val is None:
+                return list(self._FALLBACK_EOS)
+            if isinstance(val, int):
+                return [val]
+            return list(val)
+        if name == "eos_token_id":
+            ids = self.__getattr__("eos_token_ids")
+            return ids[0] if ids else None
+        return getattr(self._inner, name)
+
+    def encode(self, *args, **kwargs):
+        return self._inner.encode(*args, **kwargs)
+
+    def decode(self, *args, **kwargs):
+        return self._inner.decode(*args, **kwargs)
+
+
+def _safe_tokenizer_view(tokenizer):
+    """Return a tokenizer view that guarantees safe eos_token_id(s).
+
+    If the input is already safe (has non-None eos_token_ids or
+    eos_token_id), return it as-is. Otherwise wrap it in _SafeTokenizerView.
+    """
+    if tokenizer is None:
+        return None
+    eos = getattr(tokenizer, "eos_token_ids", None)
+    if eos is None:
+        eos = getattr(tokenizer, "eos_token_id", None)
+    if eos is None:
+        return _SafeTokenizerView(tokenizer)
+    return tokenizer
+
+
 @dataclass
 class SpecPrefillConfig:
     """Configuration for SpecPrefill, loaded from env vars at module init."""
@@ -598,9 +652,19 @@ def sparse_prefill_target(
     # _RoPEPatcher raises (e.g. RoPE lookup miss on a new architecture).
     try:
         with _RoPEPatcher(target_model, keep_indices, num_tokens):
+            # Guard: sharded target_model may not expose .tokenizer (returns None),
+            # and even when it does, draft-model tokenizers from mlx-community
+            # can have eos_token_id=None which crashes mlx_lm.stream_generate
+            # with `AttributeError: 'NoneType' object has no attribute
+            # 'eos_token_id'`. Build a thin SafeTokenizer view that exposes
+            # the attributes mlx_lm reads (eos_token_ids, encode, decode)
+            # with safe fallbacks. This is defense-in-depth on top of the
+            # @safe_specprefill decorator above.
+            raw_tok = getattr(target_model, 'tokenizer', None)
+            tok = _safe_tokenizer_view(raw_tok) if raw_tok is not None else None
             for _ in stream_generate(
                 target_model,
-                target_model.tokenizer if hasattr(target_model, 'tokenizer') else None,
+                tok,
                 prompt=kept_prompt.tolist(),
                 max_tokens=1,
             ):
