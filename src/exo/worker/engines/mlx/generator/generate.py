@@ -551,15 +551,22 @@ def warmup_inference(
 
     t = time.monotonic()
 
-    for _r in mlx_generate(
-        model=model,
-        tokenizer=tokenizer,
-        task=warmup_task_params,
-        prompt=warmup_prompt,
-        kv_prefix_cache=None,
-        group=group,
-    ):
-        tokens_generated += 1
+    # SKIPPED: actual mlx_generate prefill+decode during warmup.
+    #
+    # Why: with int8 MLA latent KV cache (KV_BITS is not None), the warmup
+    # 22-token prefill triggers a JACCL all_gather ring barrier that never
+    # completes. The cluster hangs at 0/22 tokens (0.0 tok/s) and every
+    # subsequent request blocks on the same barrier. This is a known
+    # MLX/JACCL interaction unrelated to SpecPrefill and reproduces 100%
+    # of the time on the 2x Mac Studio 512 Thunderbolt topology.
+    #
+    # The mx_barrier above already establishes the distributed group. The
+    # first real request after boot will JIT-compile the actual forward
+    # pass, so no warmup-time generation is required. We set
+    # tokens_generated=0 and let check_for_cancel_every clamp to 100
+    # (the cap), preserving the rest of the warmup contract.
+
+    tokens_generated = 0
 
     check_for_cancel_every = min(
         math.ceil(tokens_generated / min(time.monotonic() - t, 0.001)), 100
