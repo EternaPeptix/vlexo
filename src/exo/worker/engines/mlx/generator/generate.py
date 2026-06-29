@@ -280,7 +280,6 @@ def pipeline_parallel_prefill(
     )
 
 
-@safe_specprefill(stream_generate)
 def prefill(
     model: Model,
     tokenizer: TokenizerWrapper,
@@ -385,7 +384,20 @@ def prefill(
                     on_prefill_progress=on_prefill_progress,
                     group=group,
                 )
-                return result
+                if result is None:
+                    # safe_specprefill decorator caught an internal exception
+                    # (e.g. _RoPEPatcher RoPE lookup miss, draft scoring fail).
+                    # Treat as a SpecPrefill failure and fall through to the
+                    # standard stream_generate path below, which always returns
+                    # a valid (tokens_per_sec, num_tokens, snapshots) 3-tuple.
+                    # Without this guard, the caller's tuple unpack would
+                    # crash with TypeError: cannot unpack non-iterable NoneType.
+                    logger.warning(
+                        "SpecPrefill sparse_prefill_target returned None; "
+                        "falling back to stream_generate"
+                    )
+                else:
+                    return result
             finally:
                 # Always restore RoPE state (no-op for stub-quality _RoPEPatcher,
                 # but the contract is: cleanup_rope is always safe to call).

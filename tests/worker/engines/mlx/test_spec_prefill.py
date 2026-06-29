@@ -65,18 +65,19 @@ def test_validate_tokenizer_compat_low_overlap_raises():
 
 
 def test_draft_prefill_requires_loaded_model():
-    """draft_prefill returns None (via @safe_specprefill) when draft model not loaded.
+    """draft_prefill returns (0.0, 0, None) (via @safe_specprefill) when draft model not loaded.
 
-    The @safe_specprefill decorator catches any Exception and returns None to
-    signal fallback to the caller (generate.py:prefill()). Previously this
-    function raised RuntimeError directly; the decorator now swallows that
-    exception and returns None so callers can detect the failure and fall
-    through to stream_generate.
+    The @safe_specprefill decorator catches any Exception and returns a valid
+    3-tuple (0.0, 0, None) to signal fallback to the caller (generate.py:prefill()).
+    This prevents TypeError: cannot unpack non-iterable NoneType at callers
+    that do `prefill_tps, prefill_tokens, cache_snapshots = draft_prefill(...)`.
+    Callers can check `prefill_tps == 0.0 and prefill_tokens == 0` to detect fallback.
     """
     dm = DraftModel("fake")
     cfg = SpecPrefillConfig()
     import mlx.core as mx
-    assert draft_prefill(dm, mx.array([1, 2, 3]), cfg) is None
+    result = draft_prefill(dm, mx.array([1, 2, 3]), cfg)
+    assert result == (0.0, 0, None)
 
 
 def test_q_vector_capture_context_manager():

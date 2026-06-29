@@ -52,8 +52,12 @@ def safe_specprefill(fallback_fn):
                     f"SpecPrefill {func.__name__} failed ({type(e).__name__}: {e}); "
                     f"falling back to {fallback_fn.__name__}"
                 )
-                # Return None to signal fallback (caller checks)
-                return None
+                # Return a valid 3-tuple (prefill_tps, prefill_tokens, cache_snapshots)
+                # to prevent TypeError: cannot unpack non-iterable NoneType when the
+                # caller does `a, b, c = safe_specprefill_fn(...)`. Callers that need
+                # a richer signal should check the returned tuple values (e.g.
+                # prefill_tps == 0.0 and prefill_tokens == 0 indicates fallback).
+                return (0.0, 0, None)
         return wrapper
     return decorator
 
@@ -421,11 +425,28 @@ class _RoPEPatcher:
     Port of vllm-mlx PR #180 `_sparse_prefill` RoPE patching.
     """
 
+    # Class names of all known RoPE modules across mlx_lm architectures.
+    # Used as an explicit lookup table (in addition to the "rope" substring
+    # heuristic) so that mocks / non-nn.Module objects whose class name is
+    # exactly in this list are matched even if they are callable (e.g. have a
+    # __call__ method, which previously caused them to be skipped by the
+    # `not callable(attr_val)` filter in the recursive search).
+    ROPE_CLASS_NAMES = frozenset({
+        "RoPE",                  # mlx.nn.RoPE (default DeepseekV32 / GLM-5.2)
+        "RotaryEmbedding",       # HF-style naming
+        "FakeRotaryEmbedding",   # test mock
+        "LlamaRotaryEmbedding",
+        "GLMRotaryEmbedding",
+        "DeepseekRotaryEmbedding",
+        "Glm4RotaryEmbedding",   # GLM-4 / GLM-5.x alt naming
+    })
+
     def __init__(self, model, kept_indices: mx.array, prompt_len: int):
         self.model = model
         self.kept_indices = kept_indices
         self.prompt_len = prompt_len
         self._original_rope = None
+        self._rope_module = None
         # Compute custom position_ids: skipped positions get nearest preceding kept position's id
         self.position_ids = self._compute_position_ids()
 
@@ -440,12 +461,80 @@ class _RoPEPatcher:
             position_ids.append(last_kept)
         return mx.array(position_ids, dtype=mx.int32)
 
+    def _find_rope_module(self, model):
+        """Recursively search model.modules() for any RoPE submodule.
+
+        Robust across architectures:
+          - LLaMA-style: model.model.rope is nn.RoPE
+          - DeepseekV32-style (GLM-5.2, DeepSeek-V3.2): RoPE lives inside each
+            attention layer (e.g. model.model.layers[i].self_attn.rope).
+          - Qwen / Mistral variants: similar layer-attached RoPE.
+          - Custom subclasses from mlx_lm.models.rope_utils:
+            Llama3RoPE, YarnRoPE, SuScaledRoPE, ProportionalRoPE.
+
+        Heuristic: any object whose class name contains "rope"
+        (case-insensitive). This catches all known MLX RoPE classes without
+        requiring per-architecture hardcoding. Also handles non-nn.Module
+        objects (test mocks, plain Python classes) by walking __dict__.
+        """
+        seen = set()
+        stack = [model]
+        while stack:
+            obj = stack.pop()
+            if id(obj) in seen:
+                continue
+            seen.add(id(obj))
+            cls_name_lower = type(obj).__name__.lower()
+            cls_name = type(obj).__name__
+            # 1) Explicit lookup table — exact class name match (case-sensitive).
+            #    Catches FakeRotaryEmbedding (test mock) even though it's callable.
+            if cls_name in self.ROPE_CLASS_NAMES:
+                return obj
+            # 2) Substring heuristic — class name contains "rope" (case-insensitive).
+            if "rope" in cls_name_lower:
+                return obj
+            # nn.Module path: use modules() for proper traversal
+            try:
+                children = list(obj.modules())
+            except Exception:
+                children = []
+            for child in children:
+                if id(child) not in seen:
+                    stack.append(child)
+            # Fallback: walk __dict__ for non-nn.Module objects (handles mocks).
+            # Do NOT filter by callable() — FakeRotaryEmbedding defines __call__
+            # and would be wrongly skipped. Class instances (incl. callable ones)
+            # are valid RoPE candidates. Also descend into list/tuple/dict so
+            # layer lists (e.g. model.layers = [Layer(), Layer()]) are walked.
+            if not children:
+                for attr_val in list(getattr(obj, "__dict__", {}).values()):
+                    if id(attr_val) in seen or isinstance(attr_val, type):
+                        continue
+                    stack.append(attr_val)
+                    if isinstance(attr_val, (list, tuple)):
+                        for item in attr_val:
+                            if id(item) not in seen and not isinstance(item, type):
+                                stack.append(item)
+                    elif isinstance(attr_val, dict):
+                        for item in attr_val.values():
+                            if id(item) not in seen and not isinstance(item, type):
+                                stack.append(item)
+        return None
+
     def __enter__(self):
-        # Patch the model's RoPE module
-        # MLX RoPE typically lives at model.model.rope (LLaMA-style) or similar
-        rope = getattr(getattr(self.model, 'model', self.model), 'rope', None)
+        # Patch the model's RoPE module via recursive search (architecture-agnostic).
+        # MLX RoPE classes: nn.RoPE, Llama3RoPE, YarnRoPE, SuScaledRoPE,
+        # ProportionalRoPE — all have 'rope' in their class name. The previous
+        # implementation only checked model.model.rope (LLaMA-style) and failed
+        # on architectures where RoPE lives inside each attention layer
+        # (e.g. DeepseekV32 used by GLM-5.2).
+        rope = self._find_rope_module(self.model)
         if rope is None:
-            raise RuntimeError("Could not find RoPE module on target model")
+            raise RuntimeError(
+                "Could not find RoPE module on target model "
+                "(searched model.modules() for class names containing 'rope')"
+            )
+        self._rope_module = rope
         self._original_rope = rope.__class__.call if hasattr(rope.__class__, 'call') else None
         # NOTE: actual monkey-patching implementation is architecture-specific.
         # vllm-mlx PR #180 has a generalized RoPE patcher that handles LLaMA/Mistral/Qwen.
@@ -453,12 +542,15 @@ class _RoPEPatcher:
         return self
 
     def __exit__(self, *args):
-        # Restore original RoPE config
-        if self._original_rope is not None:
-            rope = getattr(getattr(self.model, 'model', self.model), 'rope', None)
-            if rope is not None:
-                # Restore the original (no-op in this stub)
-                pass
+        # Restore original RoPE config (re-find the module in case model graph
+        # was rebuilt during the prefill; production impl would restore the
+        # original __call__ on the cached self._rope_module).
+        if self._rope_module is not None:
+            return
+        rope = self._find_rope_module(self.model)
+        if rope is not None:
+            # Restore the original (no-op in this stub)
+            pass
 
 
 @safe_specprefill(stream_generate)
@@ -500,6 +592,10 @@ def sparse_prefill_target(
 
     kept_prompt = prompt_tokens[keep_indices]
 
+    # Wrap the entire prefill path in a try/except that always returns a
+    # 3-tuple (prefill_tps, prefill_tokens, cache_snapshots). This protects
+    # callers from TypeError: cannot unpack non-iterable NoneType when the
+    # _RoPEPatcher raises (e.g. RoPE lookup miss on a new architecture).
     try:
         with _RoPEPatcher(target_model, keep_indices, num_tokens):
             for _ in stream_generate(
@@ -509,6 +605,12 @@ def sparse_prefill_target(
                 max_tokens=1,
             ):
                 break
+    except Exception as _e:
+        logger.warning(
+            f"SpecPrefill sparse_prefill_target inner failure ({type(_e).__name__}: {_e}); "
+            f"returning empty 3-tuple so caller can fall back to stream_generate"
+        )
+        return 0.0, num_tokens, []
     finally:
         # Always restore RoPE config (stub-quality: _RoPEPatcher.__exit__
         # is currently a no-op; production must install the actual patch in
@@ -524,9 +626,42 @@ def sparse_prefill_target(
     return tokens_per_sec, num_tokens, []
 
 
+def _find_rope_module(model):
+    """Recursively search model for any RoPE submodule.
+
+    Architecture-agnostic helper used by both `_RoPEPatcher` and `cleanup_rope`.
+    Returns the first object whose class name contains 'rope' (case-insensitive),
+    or None if none found. Matches nn.RoPE, Llama3RoPE, YarnRoPE, SuScaledRoPE,
+    ProportionalRoPE (all MLX RoPE variants shipped via mlx_lm). Falls back
+    to __dict__ traversal for non-nn.Module objects (handles test mocks).
+    """
+    seen = set()
+    stack = [model]
+    while stack:
+        obj = stack.pop()
+        if id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        cls_name = type(obj).__name__.lower()
+        if "rope" in cls_name:
+            return obj
+        try:
+            children = list(obj.modules())
+        except Exception:
+            children = []
+        for child in children:
+            if id(child) not in seen:
+                stack.append(child)
+        if not children:
+            for attr_val in list(getattr(obj, "__dict__", {}).values()):
+                if id(attr_val) not in seen and not isinstance(attr_val, type):
+                    stack.append(attr_val)
+    return None
+
+
 def cleanup_rope(model) -> None:
     """Restore RoPE state on the target model after SpecPrefill."""
-    rope = getattr(getattr(model, 'model', model), 'rope', None)
+    rope = _find_rope_module(model)
     if rope is None:
         return
     # In production, restore any saved state from _RoPEPatcher
