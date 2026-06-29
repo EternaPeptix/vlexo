@@ -660,8 +660,34 @@ def sparse_prefill_target(
             # the attributes mlx_lm reads (eos_token_ids, encode, decode)
             # with safe fallbacks. This is defense-in-depth on top of the
             # @safe_specprefill decorator above.
+            #
+            # CRITICAL: when raw_tok is None we MUST still hand stream_generate
+            # a non-None tokenizer. mlx_lm.stream_generate line 666 unconditionally
+            # calls TokenizerWrapper(tokenizer) which dereferences
+            # `tokenizer.eos_token_id` at line 309 of tokenizer_utils.py —
+            # passing None there raises AttributeError('NoneType', 'eos_token_id').
+            # Build a minimal stub with safe defaults; stream_generate only needs
+            # decode (for NaiveStreamingDetokenizer), encode (for prompt str path),
+            # get_vocab (for _infer_thinking), eos_token_id (for EOS check), and
+            # chat_template (for has_chat_template). Prompt here is an int list so
+            # encode/bos_token paths are not actually exercised, but we set safe
+            # defaults defensively.
             raw_tok = getattr(target_model, 'tokenizer', None)
-            tok = _safe_tokenizer_view(raw_tok) if raw_tok is not None else None
+            if raw_tok is None:
+                import types
+                raw_tok = types.SimpleNamespace(
+                    eos_token_id=0,
+                    eos_token_ids=[0],
+                    bos_token=None,
+                    pad_token=None,
+                    chat_template=None,
+                    clean_up_tokenization_spaces=False,
+                    get_vocab=lambda: {},
+                    encode=lambda *a, **k: [],
+                    decode=lambda *a, **k: "",
+                    add_eos_token=lambda *a, **k: None,
+                )
+            tok = _safe_tokenizer_view(raw_tok)
             for _ in stream_generate(
                 target_model,
                 tok,
